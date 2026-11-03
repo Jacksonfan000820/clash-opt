@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>代理链路 · 自动优选</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --line:#e8eaee; --line2:#f1f3f6;
+    --ink:#0f172a; --ink2:#5b6472; --ink3:#98a1af;
+    --blue:#2563eb; --blue-bg:#eff4ff;
+    --green:#059669; --green-bg:#ecfdf5;
+    --amber:#d97706; --amber-bg:#fffbeb;
+    --red:#dc2626; --red-bg:#fef2f2;
+    --sh:0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.03);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5;
+       font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC",-apple-system,"Segoe UI",sans-serif;
+       padding:26px 20px 22px;max-width:1280px;margin:0 auto;-webkit-font-smoothing:antialiased}
+
+  /* ---------- 顶栏 ---------- */
+  .bar{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;min-height:44px;
+       padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .brand{font-size:16px;font-weight:660;letter-spacing:-.2px;display:flex;align-items:baseline;
+         gap:8px;flex:0 0 auto;white-space:nowrap}
+  .bar .grow{min-width:8px}
+  .brand em{font-style:normal;font-size:11.5px;font-weight:500;color:var(--ink3)}
+  .grow{flex:1}
+  .auto{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);
+        border-radius:11px;padding:7px 13px 7px 12px;box-shadow:var(--sh)}
+  .auto .lbl{font-size:12.5px;font-weight:600;color:var(--ink)}
+  .auto .st{font-size:11px;color:var(--ink3)}
+  .sw{position:relative;width:42px;height:23px;border-radius:12px;background:#dfe3e9;cursor:pointer;
+      transition:.2s;flex:0 0 auto}
+  .sw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;border-radius:50%;
+             background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:.2s}
+  .sw.on{background:var(--green)}
+  .sw.on::after{transform:translateX(19px)}
+
+  /* ---------- 卡片 ---------- */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:13px;
+        box-shadow:var(--sh);padding:16px 18px}
+  .card h3{font-size:11px;font-weight:650;color:var(--ink3);letter-spacing:.6px;
+           text-transform:uppercase;margin-bottom:11px}
+
+  /* ---------- 主状态 ---------- */
+  .hero{display:flex;align-items:center;gap:22px;padding:18px 22px;margin-bottom:14px}
+  .hero .lft{flex:0 0 auto;min-width:210px}
+  .hero .cap{font-size:11px;color:var(--ink3);font-weight:600;letter-spacing:.6px;
+             text-transform:uppercase;margin-bottom:6px}
+  .hero .node{font-size:25px;font-weight:680;letter-spacing:-.5px;display:flex;align-items:center;gap:9px}
+  .hero .flag{font-size:21px}
+  .hero .note{font-size:12px;color:var(--ink2);margin-top:5px}
+  .hero .div{width:1px;align-self:stretch;background:var(--line2)}
+  .stats{display:flex;gap:26px;flex:1;flex-wrap:wrap}
+  .stat .k{font-size:11px;color:var(--ink3);font-weight:600;letter-spacing:.5px;
+           text-transform:uppercase;margin-bottom:3px}
+  .stat .v{font-size:20px;font-weight:660;letter-spacing:-.4px;font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:11.5px;font-weight:500;color:var(--ink3);margin-left:3px;letter-spacing:0}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+         font-size:11.5px;font-weight:650}
+  .badge.ok{background:var(--green-bg);color:var(--green)}
+  .badge.warn{background:var(--amber-bg);color:var(--amber)}
+  .badge.bad{background:var(--red-bg);color:var(--red)}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+
+  /* ---------- 布局 ---------- */
+  .g2{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;margin-bottom:14px}
+  .g3{display:grid;grid-template-columns:1.35fr 1fr;gap:14px;align-items:start}
+
+  /* ---------- 曲线 ---------- */
+  canvas{width:100%;height:132px;display:block}
+  .lg{display:flex;gap:15px;font-size:11.5px;color:var(--ink3);margin-top:9px;align-items:center}
+  .lg i{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+
+  /* ---------- 按钮 ---------- */
+  .btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:8px 15px;
+       border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;transition:.15s;
+       font-family:inherit;white-space:nowrap}
+  .btn:hover{background:#fafbfc;border-color:#d6dae1}
+  .btn:active{transform:scale(.985)}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff;
+               box-shadow:0 1px 2px rgba(37,99,235,.25)}
+  .btn.primary:hover{background:#1d4ed8}
+  .btn.sm{padding:4px 11px;font-size:12px;border-radius:7px}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+
+  /* ---------- 节点表 ---------- */
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:10.5px;color:var(--ink3);font-weight:650;letter-spacing:.5px;
+     text-transform:uppercase;padding:0 0 9px;border-bottom:1px solid var(--line2)}
+  th.r,td.r{text-align:right}
+  td{padding:9px 0;border-bottom:1px solid var(--line2);font-size:13px;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tbody tr{cursor:pointer;transition:.12s}
+  tbody tr:hover td{background:#fafcff}
+  tr.cur td{background:var(--blue-bg)}
+  tr.cur:hover td{background:#e6efff}
+  .nm{font-weight:600;display:flex;align-items:center;gap:7px}
+  .live{width:6px;height:6px;border-radius:50%;background:var(--blue);flex:0 0 auto}
+  .num{font-variant-numeric:tabular-nums;font-weight:640}
+  .bar{height:5px;border-radius:3px;background:#eef1f5;overflow:hidden;min-width:60px;margin-top:3px}
+  .bar>i{display:block;height:100%;border-radius:3px;transition:width .4s}
+  .tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:10.5px;font-weight:700;
+       letter-spacing:.3px}
+  .t-HK{background:#fee2e2;color:#b91c1c}
+  .t-JP{background:#ede9fe;color:#6d28d9}
+  .t-SG{background:#e0f2fe;color:#0369a1}
+  .t-US{background:#f1f5f9;color:#475569}
+  .t-TW{background:#fef3c7;color:#b45309}
+  .t-xx{background:#f1f5f9;color:#475569}
+
+  /* ---------- 提示条 ---------- */
+  .alert{display:none;gap:11px;align-items:flex-start;padding:12px 15px;border-radius:11px;
+         margin-bottom:14px;font-size:13px;line-height:1.55}
+  .alert.on{display:flex}
+  .alert .ic{flex:0 0 auto;font-size:15px;line-height:1.35}
+  .alert.bad{background:var(--red-bg);border:1px solid #fecaca;color:#7f1d1d}
+  .alert.warn{background:var(--amber-bg);border:1px solid #fde68a;color:#78350f}
+  .alert .act{margin-left:auto;flex:0 0 auto}
+
+  /* ---------- 事件 ---------- */
+  .feed{max-height:238px;overflow-y:auto;margin:-4px -4px 0}
+  .feed li{list-style:none;padding:7px 4px;border-bottom:1px solid var(--line2);
+           display:flex;gap:9px;font-size:12.5px;align-items:baseline}
+  .feed li:last-child{border-bottom:none}
+  .ft{color:var(--ink3);font-variant-numeric:tabular-nums;flex:0 0 46px;font-size:11.5px}
+  .fl{flex:0 0 44px;font-size:10px;font-weight:700;letter-spacing:.3px}
+  .fl.info{color:var(--ink3)} .fl.switch{color:var(--blue)}
+  .fl.warn{color:var(--amber)} .fl.error{color:var(--red)}
+
+  .chain{display:flex;justify-content:space-between;gap:10px;padding:7px 0;
+         border-bottom:1px solid var(--line2);font-size:12.5px}
+  .chain:last-child{border-bottom:none}
+  .chain .n{color:var(--ink3);font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .hint{font-size:11.5px;color:var(--ink3);line-height:1.6}
+  .mono{font-variant-numeric:tabular-nums}
+  @media(max-width:940px){
+    .g2,.g3{grid-template-columns:1fr}
+    .hero{flex-wrap:wrap;gap:16px}
+    .hero .div{display:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="brand">代理链路 <em>自动优选 · 免手动</em></div>
+  <div class="grow"></div>
+  <div class="auto" onclick="toggle('heal')" title="模式被改回 global、节点被换掉时自动拉回来">
+    <div>
+      <div class="lbl">自动模式</div>
+      <div class="st" id="autoSub">全部交给它</div>
+    </div>
+    <div class="sw on" id="swAuto"></div>
+  </div>
+  <button class="btn primary" id="btnUnify" onclick="unifyNow()">一键切到最优</button>
+</div>
+
+<div class="alert" id="alert">
+  <span class="ic">⚠</span>
+  <div id="alertText" style="flex:1"></div>
+  <div class="act"><button class="btn sm" id="alertBtn" onclick="unifyNow()">立即处理</button></div>
+</div>
+
+<div class="card hero">
+  <div class="lft">
+    <div class="cap">当前出口节点</div>
+    <div class="node"><span class="flag" id="hFlag"></span><span id="hNode">—</span></div>
+    <div class="note" id="hNote">正在读取…</div>
+  </div>
+  <div class="div"></div>
+  <div class="stats">
+    <div class="stat">
+      <div class="k">上行</div>
+      <div class="v" id="sUp">—<small>KB/s</small></div>
+    </div>
+    <div class="stat">
+      <div class="k">下行</div>
+      <div class="v" id="sDown">—<small>KB/s</small></div>
+    </div>
+    <div class="stat">
+      <div class="k">首字节</div>
+      <div class="v" id="sTtfb">—<small>s</small></div>
+    </div>
+    <div class="stat">
+      <div class="k">连接</div>
+      <div class="v" id="sConn">—<small>条</small></div>
+    </div>
+    <div class="stat" style="align-self:center">
+      <div id="sHealth" class="badge ok"><span class="dot"></span><span>—</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="g2">
+  <div class="card">
+    <h3>实时吞吐</h3>
+    <canvas id="chart"></canvas>
+    <div class="lg">
+      <span><i style="background:var(--blue)"></i>上行（传图靠它）</span>
+      <span><i style="background:#b6bfcc"></i>下行</span>
+      <span style="margin-left:auto" id="scale"></span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>链路占用</h3>
+    <div id="chains"><div class="hint">采集中…</div></div>
+  </div>
+</div>
+
+<div class="g3">
+  <div class="card">
+    <h3>节点排行 · 点一行即可切换</h3>
+    <table>
+      <thead><tr>
+        <th>节点</th><th>区</th><th class="r">上行 KB/s</th><th style="width:82px"></th><th class="r">延迟</th>
+      </tr></thead>
+      <tbody id="rankBody">
+        <tr><td colspan="5" class="hint" style="padding:16px 0">还没有测速数据</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>事件</h3>
+    <ul class="feed" id="feed"><li class="hint">—</li></ul>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const fmt=v=>(v>50*1024*1024)?'—':(v>=1024?(v/1024).toFixed(1)+' MB/s':Math.round(v)+' KB/s');
+const sname=n=>(n||'').replace(/[\u{1F1E6}-\u{1F1FF}]{2}\s*/gu,'').trim()||n;
+const flag=n=>(n||'').match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0]||'';
+let lastOk=0;
+
+async function pull(){
+  try{
+    const r=await fetch('/api/state',{cache:'no-store'});
+    if(!r.ok) throw 0;
+    render(await r.json());
+    lastOk=Date.now();
+  }catch(e){
+    if(Date.now()-lastOk>4000){
+      showAlert('bad','连不上后台服务','clash_opt.py serve 没在运行，或页面不是从 http://127.0.0.1:8787 打开的。',false);
+    }
+  }
+}
+
+function showAlert(level,title,body,withBtn=true){
+  $('alert').className='alert on '+level;
+  $('alertText').innerHTML=`<b>${title}</b>${body?' —— '+body:''}`;
+  $('alertBtn').style.display=withBtn?'':'none';
+}
+
+function render(s){
+  const h=s.health||{}, lv=h.level||'ok';
+  const node=s.proxies_node||s.node||'—';
+
+  // 主状态
+  $('hFlag').textContent=flag(node);
+  $('hNode').textContent=sname(node);
+  const autoOn=!!s.auto_heal;
+  $('swAuto').className='sw'+(autoOn?' on':'');
+  $('autoSub').textContent=autoOn?'全部交给它':'已关闭，需手动';
+  $('sHealth').className='badge '+lv;
+  $('sHealth').innerHTML='<span class="dot"></span><span>健康 '+(h.score??'—')+'</span>';
+
+  const up=(s.rate&&s.rate.up)||0, dn=(s.rate&&s.rate.down)||0;
+  $('sUp').innerHTML=fmt(up).replace(/ (.*)/,'<small>$1</small>');
+  $('sDown').innerHTML=fmt(dn).replace(/ (.*)/,'<small>$1</small>');
+  $('sTtfb').innerHTML=(s.ttfb!=null?s.ttfb.toFixed(2):'—')+'<small>s</small>';
+  $('sConn').innerHTML=(s.conns??'—')+'<small>条</small>';
+
+  const best=(s.rank&&s.rank[0]);
+  let note=`模式 ${s.mode||'?'}`;
+  if(best) note+=` · 最优 ${sname(best.node)} ${best.up_kbps} KB/s`;
+  if(s.stale_count) note+=` · ${s.stale_count} 条连接赖在慢节点`;
+  if(s.bench_running) note='测速中，节点会临时跳动，属正常';
+  $('hNote').textContent=note;
+
+  // 告警
+  if(s.stale_count>0){
+    const st=s.stale[0];
+    showAlert('warn','有连接卡在慢节点上',
+      `${st.host} 正在走 ${sname(st.node)}（只 ${st.up_rate} KB/s），点右边清理，它就会重连到最优节点`,true);
+  }else if(lv!=='ok'&&h.reasons&&h.reasons.length){
+    showAlert(h.level,h.reasons[0],h.reasons.slice(1).join('；'),lv!=='ok');
+  }else{
+    $('alert').className='alert';
+  }
+
+  drawChart(s.history||[]);
+
+  // 链路
+  const ch=s.chains||[];
+  $('chains').innerHTML=ch.length?ch.map(c=>{
+    const ps=c.chain.split(' > ');
+    const nd=ps[ps.length-1], grp=ps[0];
+    const nm=/(DIRECT|REJECT|直连)/i.test(nd)?'直连':(flag(nd)+' '+sname(nd)).trim();
+    return `<div class="chain"><span>${nm}<span class="hint" style="margin-left:6px">${grp}</span></span>
+            <span class="n">${c.count} 条 · ↑${(c.up/1048576).toFixed(1)}MB</span></div>`;
+  }).join(''):'<div class="hint">无活跃连接</div>';
+
+  // 排行
+  const rk=s.rank||[], cur=s.proxies_node;
+  if(rk.length){
+    const mx=Math.max(...rk.map(r=>r.up_kbps),1);
+    let list=rk.slice(0,10);
+    const curRow=rk.find(r=>r.node===cur);
+    // 当前节点掉出前 12 时，把它顶到第一行，否则用户看不到自己在用什么
+    if(curRow && !list.some(r=>r.node===cur)) list=[curRow,...list];
+    $('rankBody').innerHTML=list.map(r=>{
+      const isCur=r.node===cur;
+      const col=r.up_kbps>=1200?'var(--green)':r.up_kbps>=400?'var(--amber)':'var(--red)';
+      return `<tr class="${isCur?'cur':''}" onclick="pick('${r.node.replace(/'/g,"\\'")}')">
+        <td><div class="nm">${isCur?'<span class="live"></span>':''}${sname(r.node)}</div></td>
+        <td><span class="tag t-${r.region}">${r.region}</span></td>
+        <td class="r"><span class="num">${r.up_kbps>0?r.up_kbps:'—'}</span></td>
+        <td>${r.up_kbps>0?`<div class="bar"><i style="width:${Math.max(3,Math.round(r.up_kbps/mx*100))}%;background:${col}"></i></div>`:''}</td>
+        <td class="r hint mono">${r.delay??'—'}</td>
+      </tr>`;}).join('');
+  }
+
+  // 事件
+  const ev=s.events||[];
+  $('feed').innerHTML=ev.length?ev.map(e=>
+    `<li><span class="ft">${e.t}</span><span class="fl ${e.level}">${e.level}</span><span>${e.msg}</span></li>`
+  ).join(''):'<li class="hint">—</li>';
+
+  $('btnUnify').textContent=s.bench_running?'测速中…':'一键切到最优';
+  $('btnUnify').disabled=!!s.bench_running;
+}
+
+function drawChart(hs){
+  const c=$('chart'),dpr=window.devicePixelRatio||1;
+  const w=c.clientWidth||600,h=132;
+  c.width=w*dpr;c.height=h*dpr;
+  const x=c.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);
+  x.clearRect(0,0,w,h);
+  x.strokeStyle='#f1f3f6';x.lineWidth=1;
+  for(let i=1;i<4;i++){const y=h/4*i;x.beginPath();x.moveTo(0,y);x.lineTo(w,y);x.stroke();}
+  if(hs.length<2)return;
+  const mx=Math.max(...hs.map(d=>Math.max(d.up,d.down)),64*1024);
+  const px=i=>i/(hs.length-1)*(w-2)+1, py=v=>h-4-(v/mx)*(h-14);
+  const line=(k,col,wd)=>{
+    x.beginPath();x.strokeStyle=col;x.lineWidth=wd;x.lineJoin='round';x.lineCap='round';
+    hs.forEach((d,i)=>{const y=py(d[k]);i?x.lineTo(px(i),y):x.moveTo(px(i),y);});
+    x.stroke();
+  };
+  line('down','#b6bfcc',1.6);
+  // 上行加淡填充
+  x.beginPath();x.moveTo(px(0),h);
+  hs.forEach((d,i)=>x.lineTo(px(i),py(d.up)));
+  x.lineTo(px(hs.length-1),h);x.closePath();
+  x.fillStyle='rgba(37,99,235,.07)';x.fill();
+  line('up','var(--blue)',2);
+  $('scale').textContent='峰值 '+Math.round(mx/1024)+' KB/s';
+}
+
+async function pick(n){await fetch('/api/switch?node='+encodeURIComponent(n));pull();}
+async function unifyNow(){await fetch('/api/unify');pull();}
+async function toggle(k){await fetch('/api/toggle?k='+k);pull();}
+
+pull();setInterval(pull,1500);
+</script>
+</body>
+</html>

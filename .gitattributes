@@ -1,0 +1,14 @@
+# 统一换行符，避免 Windows 提交后 macOS 拉下去跑不起来
+* text=auto
+
+# macOS/Linux 脚本必须是 LF，否则 shebang 后带 \r 会报 "bad interpreter"
+*.command text eol=lf
+*.sh      text eol=lf
+*.py      text eol=lf
+
+# Windows 批处理必须是 CRLF
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+
+# 二进制
+*.png binary
