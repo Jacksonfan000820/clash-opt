@@ -95,6 +95,8 @@ TH_UP_MIN = 250     # KB/s  低于此值判定"上行残疾"
 TH_TTFB_OK = 1.2    # s
 TH_TTFB_BAD = 3.0   # s
 TH_LAT_OK = 180     # ms
+# Codex 这类流式请求的服务端超时经验值，用于判断「这次上传会不会来不及」
+TIMEOUT_SECONDS = 100
 
 _state = {}
 _lock = threading.Lock()
@@ -595,6 +597,154 @@ def unify(kill_stale=True):
     return {"ok": True, "node": b, "killed": killed, "skipped": skipped}
 
 
+# ---------------------------------------------------------------- 一键优化分流
+_opt_running = False
+_opt_result = {}
+
+
+def _group_conns(group):
+    """取某个组当前所有连接 [(id, 实际节点, host, 进程)]。"""
+    d = api("/connections") or {}
+    out = []
+    for c in (d.get("connections") or []):
+        ch = c.get("chains") or []
+        if len(ch) < 2 or ch[-1] != group:
+            continue
+        meta = c.get("metadata") or {}
+        out.append((c.get("id"), ch[0], str(meta.get("host") or ""),
+                    str(meta.get("process") or "")))
+    return out
+
+
+def codex_stats():
+    """Codex 当前传输状况：传了多少、按现速要多久、是否可能超时。
+    超时阈值默认 100 秒（OpenAI 流式请求常见值）。"""
+    d = api("/connections") or {}
+    up_mb, conns, dn_mb = 0.0, 0, 0.0
+    for c in (d.get("connections") or []):
+        meta = c.get("metadata") or {}
+        if str(meta.get("process") or "").lower() != "codex.exe":
+            continue
+        conns += 1
+        up_mb += (c.get("upload") or 0) / 1048576
+        dn_mb += (c.get("download") or 0) / 1048576
+    # 优先用 1 秒采集的实时上行；刚启动还没采到、或当前正好空闲时，
+    # 退回最近一次测速的最优值，避免算出「要 3 小时」这种荒谬结果。
+    spd = (_state.get("rate") or {}).get("up", 0)
+    src = "realtime"
+    if spd < 20:
+        spd = _rank[0]["up_kbps"] if _rank else 0
+        src = "bench"
+    if spd < 20:
+        return {"conns": conns, "upload_mb": round(up_mb, 2),
+                "download_mb": round(dn_mb, 2), "up_kbps": 0,
+                "eta_seconds": None, "safe_limit_mb": None, "risk": "unknown"}
+
+    eta = (up_mb * 1024) / spd if up_mb else 0
+    # spd 是 KB/s，乘秒得到 KB，再 /1024 得 MB。
+    # 之前多除了一次 1024，结果永远是 0.0，于是全判超时。
+    limit_mb = spd * TIMEOUT_SECONDS / 1024
+    risk = "ok"
+    if up_mb > limit_mb * 1.15:
+        risk = "timeout"
+    elif up_mb > limit_mb * 0.85:
+        risk = "borderline"
+    return {
+        "conns": conns,
+        "upload_mb": round(up_mb, 2),
+        "download_mb": round(dn_mb, 2),
+        "up_kbps": round(spd),
+        "speed_source": src,
+        "eta_seconds": round(eta),
+        "safe_limit_mb": round(limit_mb, 1),
+        "risk": risk,
+    }
+
+
+def optimize_routing():
+    """一键优化分流：
+    1. 拿当前 AI / Google 组节点 + 排行榜前几名做候选
+    2. 每个测 2 次取中位数（单次会被瞬时峰值骗，之前吃过亏）
+    3. 最快的给 AI（Codex 主力），第二快的给 Google
+    4. 断掉两组里还赖在旧节点上的连接，强制迁移
+    """
+    global _opt_running, _opt_result
+    _opt_running = True
+    report = {"ok": False, "at": time.strftime("%H:%M:%S"), "steps": []}
+    try:
+        g = get_groups()
+        cur_ai = (g.get("AI") or {}).get("now")
+        cur_gg = (g.get("Google") or {}).get("now")
+        cands = []
+        for n in [cur_ai, cur_gg] + [r["node"] for r in _rank[:4]]:
+            if n and n not in cands and not any(p in str(n) for p in PSEUDO):
+                cands.append(n)
+        cands = cands[:6]
+        if not cands:
+            report["reason"] = "没有可用候选节点"
+            return report
+
+        report["steps"].append(f"候选 {len(cands)} 个：{', '.join(short(c) for c in cands)}")
+
+        # 逐个测 2 次取中位
+        scored = []
+        for n in cands:
+            if not set_node("Proxies", n):
+                continue
+            time.sleep(1.0)
+            a, _, _ = upload_test(n, 512, 8)
+            time.sleep(0.4)
+            b, _, _ = upload_test(n, 512, 8)
+            mid = sorted([a, b])[0]
+            scored.append((n, mid))
+            log(f"优化测速 {short(n)}: {a:.0f} / {b:.0f} → 中位 {mid:.0f} KB/s", "switch")
+        scored.sort(key=lambda x: -x[1])
+        if not scored:
+            report["reason"] = "所有候选都测不出速度"
+            return report
+
+        top = scored[:2] if len(scored) >= 2 else [scored[0], scored[0]]
+        ai_node, gg_node = top[0][0], top[1][0]
+
+        set_node("AI", ai_node)
+        set_node("Google", gg_node)
+        set_node("Proxies", ai_node)
+        report["ai_node"] = ai_node
+        report["google_node"] = gg_node
+        report["ai_kbps"] = round(top[0][1])
+        report["google_kbps"] = round(top[1][1])
+        report["steps"].append(
+            f"AI → {short(ai_node)}（{top[0][1]:.0f} KB/s），"
+            f"Google → {short(gg_node)}（{top[1][1]:.0f} KB/s）")
+
+        # 断掉两组里不在新节点上的连接（切节点不迁移老 TCP）
+        time.sleep(1.5)
+        moved = 0
+        for grp, want in (("AI", ai_node), ("Google", gg_node)):
+            for cid, node, host, proc in _group_conns(grp):
+                if node != want:
+                    r = api(f"/connections/{cid}", "DELETE")
+                    if not (isinstance(r, dict) and "_error" in r):
+                        moved += 1
+        report["moved"] = moved
+        report["steps"].append(f"断开 {moved} 条旧连接，强制重连到新节点")
+
+        log(f"一键优化完成：AI→{short(ai_node)}，Google→{short(gg_node)}，迁移 {moved} 条", "switch")
+        report["ok"] = True
+        return report
+    except Exception as e:  # noqa: BLE001
+        report["reason"] = f"出错：{e}"
+        log(f"一键优化失败: {e}", "error")
+        return report
+    finally:
+        _opt_running = False
+        _opt_result = report
+
+
+def _opt_worker():
+    optimize_routing()
+
+
 # ---------------------------------------------------------------- 采集器
 def sample_conns(prev):
     d = api("/connections") or {}
@@ -814,12 +964,24 @@ class Handler(BaseHTTPRequestHandler):
                 payload["auto_pick"] = _auto_pick
                 payload["auto_unify"] = _auto_unify
                 payload["bench_running"] = _bench_running
+                payload["opt_running"] = _opt_running
+                payload["opt_result"] = _opt_result
             payload["health"] = score_health()
+            try:
+                payload["codex"] = codex_stats()
+            except Exception:  # noqa: BLE001
+                payload["codex"] = {}
             return self._send(200, json.dumps(payload, ensure_ascii=False))
         if u.path == "/api/unify":
             qs = urllib.parse.parse_qs(u.query)
             kill = (qs.get("kill") or ["1"])[0] != "0"
             return self._send(200, json.dumps(unify(kill), ensure_ascii=False))
+        if u.path == "/api/optimize":
+            if not _opt_running:
+                threading.Thread(target=_opt_worker, daemon=True).start()
+            return self._send(200, json.dumps({"started": True}))
+        if u.path == "/api/codex":
+            return self._send(200, json.dumps(codex_stats(), ensure_ascii=False))
         if u.path == "/api/bench":
             threading.Thread(target=bench, daemon=True).start()
             return self._send(200, json.dumps({"ok": True}))

@@ -155,13 +155,38 @@
     </div>
     <div class="sw on" id="swAuto"></div>
   </div>
-  <button class="btn primary" id="btnUnify" onclick="unifyNow()">一键切到最优</button>
+  <button class="btn" id="btnUnify" onclick="unifyNow()">切到最优</button>
+  <button class="btn primary" id="btnOpt" onclick="optimizeNow()">一键优化分流</button>
 </div>
 
 <div class="alert" id="alert">
   <span class="ic">⚠</span>
   <div id="alertText" style="flex:1"></div>
   <div class="act"><button class="btn sm" id="alertBtn" onclick="unifyNow()">立即处理</button></div>
+</div>
+
+<div class="card" id="cxCard" style="display:none;margin-bottom:14px">
+  <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <div>
+      <div class="cap">Codex 正在上传</div>
+      <div style="font-size:19px;font-weight:640;margin-top:3px">
+        <span id="cxUp">—</span><small style="font-size:11px;color:#64748b;margin-left:4px">MB</small>
+      </div>
+    </div>
+    <div style="width:1px;height:34px;background:#e2e8f0"></div>
+    <div>
+      <div class="cap">按当前速度需要</div>
+      <div style="font-size:19px;font-weight:640;margin-top:3px"><span id="cxEta">—</span></div>
+    </div>
+    <div style="width:1px;height:34px;background:#e2e8f0"></div>
+    <div>
+      <div class="cap">本次安全上限</div>
+      <div style="font-size:19px;font-weight:640;margin-top:3px"><span id="cxLimit">—</span></div>
+    </div>
+    <div style="flex:1;min-width:180px">
+      <div id="cxHint" style="font-size:12.5px;line-height:1.6;color:#475569">—</div>
+    </div>
+  </div>
 </div>
 
 <div class="card hero">
@@ -230,6 +255,7 @@
 
 <script>
 const $=id=>document.getElementById(id);
+const fmtEta=sec=>sec<60?Math.round(sec)+' 秒':(sec<3600?Math.round(sec/60)+' 分 '+Math.round(sec%60)+' 秒':'>1 小时');
 const fmt=v=>(v>50*1024*1024)?'—':(v>=1024?(v/1024).toFixed(1)+' MB/s':Math.round(v)+' KB/s');
 const sname=n=>(n||'').replace(/[\u{1F1E6}-\u{1F1FF}]{2}\s*/gu,'').trim()||n;
 const flag=n=>(n||'').match(/[\u{1F1E6}-\u{1F1FF}]{2}/u)?.[0]||'';
@@ -279,6 +305,27 @@ function render(s){
   if(s.stale_count) note+=` · ${s.stale_count} 条连接赖在慢节点`;
   if(s.bench_running) note='测速中，节点会临时跳动，属正常';
   $('hNote').textContent=note;
+
+  // ---- Codex 传输状态（只有它真在传时才显示）----
+  const cx=s.codex||{};
+  if(cx.conns>0 && (cx.upload_mb||0)>0.2){
+    $('cxCard').style.display='';
+    $('cxUp').textContent=(cx.upload_mb||0).toFixed(1);
+    $('cxEta').textContent=(cx.eta_seconds!=null)?fmtEta(cx.eta_seconds):'—';
+    $('cxLimit').textContent=(cx.safe_limit_mb!=null)?cx.safe_limit_mb.toFixed(1)+' MB':'—';
+    const hint=$('cxHint');
+    if(cx.risk==='timeout'){
+      hint.innerHTML='<b style="color:#dc2626">这次大概率超时</b><br>上传量超过当前速度能在 100 秒内传完的量，会重传。建议开新会话减少上下文。';
+    }else if(cx.risk==='borderline'){
+      hint.innerHTML='<b style="color:#d97706">压线</b><br>刚好在超时边缘，可能成功也可能重传。';
+    }else if(cx.risk==='ok'){
+      hint.innerHTML='<b style="color:#059669">在安全范围内</b><br>预计能一次传完，不会重传。';
+    }else{
+      hint.textContent='正在采样，稍后给出判断。';
+    }
+  }else{
+    $('cxCard').style.display='none';
+  }
 
   // 告警
   if(s.stale_count>0){
@@ -360,10 +407,46 @@ function drawChart(hs){
 }
 
 async function pick(n){await fetch('/api/switch?node='+encodeURIComponent(n));pull();}
+async function optimizeNow(){
+  const b=$('btnOpt'); if(b.disabled) return;
+  const old=b.textContent;
+  b.disabled=true; b.textContent='优化中…（约 1–2 分钟）';
+  try{ await fetch('/api/optimize'); }catch(e){}
+  let n=0;
+  const timer=setInterval(async()=>{
+    n++;
+    try{
+      const s=await (await fetch('/api/state')).json();
+      if(!s.opt_running){
+        clearInterval(timer);
+        b.disabled=false; b.textContent=old;
+        const r=s.opt_result||{};
+        if(r.ok) toast('已优化：Codex → '+r.ai_node+'，浏览器 → '+r.google_node+(r.moved?'，迁移 '+r.moved+' 条连接':''));
+        else toast('优化失败：'+(r.reason||'未知原因'));
+        tick();
+      }
+    }catch(e){}
+    if(n>180){ clearInterval(timer); b.disabled=false; b.textContent=old; toast('优化超时，请重试'); }
+  },1000);
+}
+
 async function unifyNow(){await fetch('/api/unify');pull();}
 async function toggle(k){await fetch('/api/toggle?k='+k);pull();}
 
 pull();setInterval(pull,1500);
+</script>
+<div id="toast" style="position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
+  background:#0f172a;color:#fff;padding:11px 18px;border-radius:9px;font-size:13px;
+  opacity:0;pointer-events:none;transition:.25s;z-index:99;max-width:80vw"></div>
+<script>
+let _toastTimer;
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg;
+  el.style.opacity='1'; el.style.transform='translateX(-50%) translateY(0)';
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateX(-50%) translateY(20px)'; },4200);
+}
 </script>
 </body>
 </html>
